@@ -1,0 +1,375 @@
+version: "3.8"
+
+# E-Commerce Microservices Infrastructure
+
+# Networks
+networks:
+  ecommerce-internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+  ecommerce-public:
+    driver: bridge
+
+# Volumes
+volumes:
+  user-db-data:
+    driver: local
+  product-db-data:
+    driver: local
+  order-db-data:
+    driver: local
+  redis-data:
+    driver: local
+  rabbitmq-data:
+    driver: local
+  elasticsearch-data:
+    driver: local
+
+# Services
+services:
+  # API Gateway
+  api-gateway:
+    image: nginx:1.25-alpine
+    container_name: ecommerce-gateway
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    networks:
+      ecommerce-public:
+      ecommerce-internal:
+    depends_on:
+      user-service:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+      order-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "service.type=gateway"
+      - "service.name=api-gateway"
+
+  # User Service
+  user-service:
+    build:
+      context: ./services/user-service
+      dockerfile: Dockerfile
+    container_name: ecommerce-user-service
+    restart: unless-stopped
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SERVER_PORT=8080
+      - DATABASE_HOST=user-db
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=userdb
+      - DATABASE_USERNAME=useradmin
+      - DATABASE_PASSWORD=userpass123
+      - JWT_SECRET=your-jwt-secret-key-change-in-production
+      - JWT_EXPIRATION=86400000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+    env_file:
+      - ./env/user-service.env
+    networks:
+      ecommerce-internal:
+        aliases:
+          - user-service
+          - user
+    depends_on:
+      user-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    labels:
+      - "service.type=microservice"
+      - "service.name=user-service"
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+
+  user-db:
+    image: postgres:15-alpine
+    container_name: ecommerce-user-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=userdb
+      - POSTGRES_USER=useradmin
+      - POSTGRES_PASSWORD=userpass123
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - user-db-data:/var/lib/postgresql/data
+    networks:
+      - ecommerce-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U useradmin -d userdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Product Service
+  product-service:
+    build:
+      context: ./services/product-service
+      dockerfile: Dockerfile
+    container_name: ecommerce-product-service
+    restart: unless-stopped
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SERVER_PORT=8080
+      - DATABASE_HOST=product-db
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=productdb
+      - DATABASE_USERNAME=productadmin
+      - DATABASE_PASSWORD=productpass123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - ELASTICSEARCH_HOST=elasticsearch
+      - ELASTICSEARCH_PORT=9200
+    env_file:
+      - ./env/product-service.env
+    networks:
+      ecommerce-internal:
+        aliases:
+          - product-service
+          - product
+    depends_on:
+      product-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    labels:
+      - "service.type=microservice"
+      - "service.name=product-service"
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+
+  product-db:
+    image: postgres:15-alpine
+    container_name: ecommerce-product-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=productdb
+      - POSTGRES_USER=productadmin
+      - POSTGRES_PASSWORD=productpass123
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - product-db-data:/var/lib/postgresql/data
+    networks:
+      - ecommerce-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U productadmin -d productdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Order Service
+  order-service:
+    build:
+      context: ./services/order-service
+      dockerfile: Dockerfile
+    container_name: ecommerce-order-service
+    restart: unless-stopped
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SERVER_PORT=8080
+      - DATABASE_HOST=order-db
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=orderdb
+      - DATABASE_USERNAME=orderadmin
+      - DATABASE_PASSWORD=orderpass123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - USER_SERVICE_URL=http://user-service:8080
+      - PRODUCT_SERVICE_URL=http://product-service:8080
+    env_file:
+      - ./env/order-service.env
+    networks:
+      ecommerce-internal:
+        aliases:
+          - order-service
+          - order
+    depends_on:
+      order-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    labels:
+      - "service.type=microservice"
+      - "service.name=order-service"
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+
+  order-db:
+    image: postgres:15-alpine
+    container_name: ecommerce-order-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=orderdb
+      - POSTGRES_USER=orderadmin
+      - POSTGRES_PASSWORD=orderpass123
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - order-db-data:/var/lib/postgresql/data
+    networks:
+      - ecommerce-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orderadmin -d orderdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Web Frontend
+  web-frontend:
+    build:
+      context: ./services/web-frontend
+      dockerfile: Dockerfile
+      args:
+        - API_GATEWAY_URL=http://api-gateway
+        - NODE_ENV=production
+    container_name: ecommerce-web-frontend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - API_GATEWAY_URL=http://api-gateway
+      - NEXT_PUBLIC_API_URL=http://localhost/api
+    networks:
+      ecommerce-internal:
+      ecommerce-public:
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    labels:
+      - "service.type=frontend"
+      - "service.name=web-frontend"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+  # Infrastructure Services
+
+  redis:
+    image: redis:7-alpine
+    container_name: ecommerce-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - ecommerce-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: ecommerce-rabbitmq
+    restart: unless-stopped
+    environment:
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=rabbitmq123
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    ports:
+      - "15672:15672"
+    networks:
+      - ecommerce-internal
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
+    container_name: ecommerce-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - ecommerce-internal
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    profiles:
+      - search
