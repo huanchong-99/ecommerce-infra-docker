@@ -1,10 +1,6 @@
-# Order 2: 2026-03-29
-# =================================
-# Start/stop commands
-# Health check
-echo "Checking health..." -necho "HTTP://$SERVICE/_system/health" || exit 1
-    else
-        echo "Service unhealthy"
-        exit 0
-    fi
+#!/bin/bash
+# E-Commerce Infrastructure Health Check
+# This is a convenience wrapper for the health check script
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$SCRIPT_DIR/scripts/health_check.sh" "$@"
